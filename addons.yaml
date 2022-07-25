@@ -1,0 +1,10 @@
+microk8s-addons:
+  description: "CloudNativePG demo repo"
+  addons:
+    - name: "cloudnative-pg"
+      description: "Demo addon implemented for CloudNativePG"
+      version: "0.0.1"
+      check_status: "deployment.apps/cloudnative-pg"
+      supported_architectures:
+        - arm64
+        - amd64
