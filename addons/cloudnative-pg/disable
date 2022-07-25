@@ -1,72 +1,39 @@
-#!/usr/bin/env python3
-import os
-import subprocess
-import requests
-import json
-import click
-import yaml
+#!/usr/bin/env bash
+set -e
 
-from packaging import version
+cnpg_get_latest_version() {
+    curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest | jq -r .tag_name
+}
 
-KUBECTL = os.path.expandvars("$SNAP/microk8s-kubectl.wrapper")
+cnpg_get_manifest_url() {
+    local cnpg_version=$1; shift
+    num_version=${cnpg_version#v}
 
-def get_latest_version():
-    cnpg_latest_release = "https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest"
-    r = requests.get(cnpg_latest_release)
-    version = r.json()["tag_name"]
+		curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/tags/"$cnpg_version" |
+				jq -r '.assets[] | select( .name == "cnpg-'"${num_version}"'.yaml") | .browser_download_url '
+}
 
-    return version
+cnpg_delete_manifest() {
+		local manifest=$1; shift
 
-def cnpg_parse_release(release_json=None):
-    release_assets = release_json["assets"]
-    parsed_version = version.Version(release_json["tag_name"])
+		kubectl="$SNAP/microk8s-kubectl.wrapper"
 
-    manifest_name = "cnpg-{}.yaml".format(parsed_version)
+		$kubectl delete -f "$manifest" > /dev/null
 
-    for asset in release_assets:
-        if asset["name"] == manifest_name:
-            manifest_url = asset["browser_download_url"]
+		echo "$?"
+}
 
-    return {"version": parsed_version,
-            "manifest_name": manifest_name,
-            "manifest_url": manifest_url }
+cnpg_enable() {
+    cnpg_version=$(cnpg_get_latest_version)
+    cnpg_manifest_url=$(cnpg_get_manifest_url "$cnpg_version")
+		apply_result=$(cnpg_delete_manifest "$cnpg_manifest_url")
 
-def cnpg_parse_manifest(manifest_raw):
-    cnpg_yaml = yaml.load_all(manifest_raw, Loader=yaml.loader.FullLoader)
+		if [[ $apply_result -ne 0 ]]; then
+				echo "CloudNativePG wasn't uninstalled"
+				exit 1
+		fi
 
-    return cnpg_yaml
+		echo "CloudNativePG uninstalled"
+}
 
-def cnpg_retrieve_manifest(cnpg_release):
-    r = requests.get(cnpg_release["manifest_url"])
-
-    return cnpg_parse_manifest(r.text)
-
-def cnpg_get_release(version=None):
-    cnpg_releases_url = "https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases"
-    cnpg_release = "{}/tags/{}".format(cnpg_releases_url, version)
-    r = requests.get(cnpg_release)
-
-    return cnpg_parse_release(r.json())
-
-def cnpg_delete_manifest(manifest_path):
-    try:
-        snap_path = os.environ.get("SNAP")
-        subprocess.call(["{}/microk8s-kubectl.wrapper".format(snap_path), "delete", "-f", manifest_path])
-    except subprocess.CalledProcessError:
-        print("WAT WAT!")
-        sys.exit(5)
-
-@click.command()
-@click.option(
-    "--cnpg-version",
-    default="latest",
-    help="The path to the kata container runtime binaries.")
-def cnpg(cnpg_version):
-    if cnpg_version == "latest":
-        cnpg_version = get_latest_version()
-
-    cnpg_release = cnpg_get_release(cnpg_version)
-    cnpg_apply_manifest(cnpg_release["manifest_url"])
-
-if __name__ == "__main__":
-    cnpg()
+cnpg_enable
