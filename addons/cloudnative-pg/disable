@@ -1,39 +1,25 @@
 #!/usr/bin/env bash
 set -e
 
-cnpg_get_latest_version() {
-    curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest | jq -r .tag_name
-}
-
-cnpg_get_manifest_url() {
-    local cnpg_version=$1; shift
-    num_version=${cnpg_version#v}
-
-		curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/tags/"$cnpg_version" |
-				jq -r '.assets[] | select( .name == "cnpg-'"${num_version}"'.yaml") | .browser_download_url '
-}
 
 cnpg_delete_manifest() {
-		local manifest=$1; shift
+	kubectl="$SNAP/microk8s-kubectl.wrapper"
 
-		kubectl="$SNAP/microk8s-kubectl.wrapper"
+	"${SNAP_DATA}/bin/kubectl-cnpg" install generate | $kubectl delete -f - > /dev/null
 
-		$kubectl delete -f "$manifest" > /dev/null
-
-		echo "$?"
+	echo "$?"
 }
 
-cnpg_enable() {
-    cnpg_version=$(cnpg_get_latest_version)
-    cnpg_manifest_url=$(cnpg_get_manifest_url "$cnpg_version")
-		apply_result=$(cnpg_delete_manifest "$cnpg_manifest_url")
+cnpg_disable() {
+  echo "Uninstalling CloudNativePG"
+	apply_result=$(cnpg_delete_manifest)
 
-		if [[ $apply_result -ne 0 ]]; then
-				echo "CloudNativePG wasn't uninstalled"
-				exit 1
-		fi
+	if [[ $apply_result -ne 0 ]]; then
+		echo "CloudNativePG wasn't uninstalled"
+		exit 1
+	fi
 
-		echo "CloudNativePG uninstalled"
+	echo "CloudNativePG uninstalled"
 }
 
-cnpg_enable
+cnpg_disable

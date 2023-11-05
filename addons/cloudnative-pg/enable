@@ -1,39 +1,122 @@
 #!/usr/bin/env bash
 set -e
 
+KUBECTL="${SNAP}/microk8s-kubectl.wrapper"
+# shellcheck source=/dev/null
+source "${SNAP}"/actions/common/utils.sh
+
+if [[ "$(arch)" == "aarch64" ]]; then
+	ARCH="arm64"
+else
+	ARCH=$(arch)
+fi
+
 cnpg_get_latest_version() {
-    curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest | jq -r .tag_name
+	curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/latest | jq -r .tag_name | tr -d 'v'
 }
 
-cnpg_get_manifest_url() {
-    local cnpg_version=$1; shift
-    num_version=${cnpg_version#v}
+cnpg_check_local_plugin() {
+	if [ -f "${SNAP_DATA}/bin/kubectl-cnpg" ]; then
+		version=$("${SNAP_DATA}/bin/kubectl-cnpg" version | sed 's/.*:\(.*\).*Commit.*/\1/' | tr -d ' ')
+		echo "${version}"
+	else
+		echo ""
+	fi
+}
 
-		curl -SsL https://api.github.com/repos/cloudnative-pg/cloudnative-pg/releases/tags/"$cnpg_version" |
-				jq -r '.assets[] | select( .name == "cnpg-'"${num_version}"'.yaml") | .browser_download_url '
+cnpg_install_plugin() {
+	local cnpg_version=$1; shift
+	echo "Installing kubectl cnpg version ${cnpg_version}"
+	run_with_sudo mkdir "${SNAP_DATA}/tmp/cloudnative-pg"
+
+	fetch_as "https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v${cnpg_version}/kubectl-cnpg_${cnpg_version}_linux_${ARCH}.tar.gz" "${SNAP_DATA}/tmp/cloudnative-pg/kubectl-cnpg.tar.gz"
+	run_with_sudo tar -C "${SNAP_DATA}/tmp/cloudnative-pg/" -xvf "${SNAP_DATA}/tmp/cloudnative-pg/kubectl-cnpg.tar.gz" kubectl-cnpg
+	run_with_sudo mkdir -p "${SNAP_DATA}/bin"
+	run_with_sudo mv "${SNAP_DATA}/tmp/cloudnative-pg/kubectl-cnpg" "${SNAP_DATA}/bin/"
+	run_with_sudo chmod +x "${SNAP_DATA}/bin/kubectl-cnpg"
+	run_with_sudo rm -fr "${SNAP_DATA}/tmp/cloudnative-pg"
 }
 
 cnpg_apply_manifest() {
-		local manifest=$1; shift
+	apply_wait=$("${SNAP_DATA}"/bin/kubectl-cnpg install generate | $KUBECTL apply -f - > /dev/null)
 
-		kubectl="$SNAP/microk8s-kubectl.wrapper"
-
-		$kubectl apply -f "$manifest" > /dev/null
-
+	# If the apply isn't successful we stop and exit
+	if [[ "${apply_wait}" -ne 0 ]]; then
 		echo "$?"
+	fi
+
+	# We wait for the Deployment to be ready
+	echo "Waiting 120 seconds for CloudNativePG Pod to be ready..."
+	wait_output=$(cnpg_wait_for)
+
+	echo "${wait_output}"
+}
+
+cnpg_wait_for() {
+	$KUBECTL wait pods -n cnpg-system --for condition=Ready --timeout=120s -l app.kubernetes.io/name=cloudnative-pg
+
+	echo "$?"
+}
+
+cnpg_show_first_cluster() {
+  # Show a cluster example creation
+  echo "
+cat <<EOF | kubectl apply -f -
+# Example of PostgreSQL cluster
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: cluster-example
+spec:
+  instances: 3
+  storage:
+    size: 1Gi
+EOF
+"
+}
+
+cnpg_more_information() {
+	local cnpg_version=$1; shift;
+	version=${cnpg_version#v}
+	short_version=${version%.*}
+
+	# Show documentation URL and helper information
+	echo "
+For more information please visit the official documentation site:
+https://cloudnative-pg.io/documentation/${short_version}/
+"
 }
 
 cnpg_enable() {
-    cnpg_version=$(cnpg_get_latest_version)
-    cnpg_manifest_url=$(cnpg_get_manifest_url "$cnpg_version")
-		apply_result=$(cnpg_apply_manifest "$cnpg_manifest_url")
+	cnpg_version=$(cnpg_get_latest_version)
+	if [ "${cnpg_version}" == "" ]; then
+			echo "No connection to check the latest version, will try with a pre-installed plugin"
+	fi
+	echo "Checking if the plugin exists and version"
+	version=$(cnpg_check_local_plugin)
+	if [ "${version}" == "" ]; then
+		echo "Plugin not found, installing"
+		cnpg_install_plugin "$cnpg_version"
+	fi
+	version=$(cnpg_check_local_plugin)
 
-		if [[ $apply_result -ne 0 ]]; then
-				echo "CloudNativePG not installed"
-				exit 1
-		fi
+	if [[ "${cnpg_version}" != "" ]] && [[ "${cnpg_version}" != "${version}" ]]; then
+		echo "Local version (${version}) doesn't match latest release version (${cnpg_version}), downloading latest version"
+		cnpg_install_plugin "$cnpg_version"
+	fi
 
-		echo "CloudNativePG installed"
+	cnpg_apply_manifest
+	apply_result=$?
+
+	if [[ $apply_result -ne 0 ]]; then
+	 echo "CloudNativePG not installed"
+	 exit 1
+	fi
+
+	cnpg_show_first_cluster
+	cnpg_more_information "$cnpg_version"
+
+	echo "CloudNativePG installed"
 }
 
 cnpg_enable
